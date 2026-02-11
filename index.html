@@ -53,6 +53,9 @@
       <button id="ch2">Xavier</button>
       <button id="ch3">Edward</button>
       <button id="ch4">Liam</button>
+      <button id="ch5">Jake</button>
+      <button id="ch6">Hans</button>
+      <button id="ch7">Alex</button>
     </div>
 
     <div id="status" style="margin-top:10px;"></div>
@@ -157,10 +160,10 @@
         ui: "#0f172a"
       },
       squash: {
-        bg: "#f9f6f1",      // off-white canvas
-        floor: "#b45309",   // wood brown
-        wall: "#b91c1c",    // scarlet red
-        roof: "#7f1d1d",    // dark red ceiling
+        bg: "#f9f6f1",
+        floor: "#b45309",
+        wall: "#b91c1c",
+        roof: "#7f1d1d",
         ui: "#0f172a"
       }
     };
@@ -193,19 +196,12 @@
         id: 3,
         name: "Squash",
         roofType: "flat",
-
-        // Ceiling same height as wall
-        roofY: 120,
-
+        roofY: 60,
         gravity: 1850,
-
-        // Extra bouncy
         restitutionFloor: 0.95,
         restitutionWall: 0.95,
         restitutionRoof: 0.85,
-
-        wallTopY: 120,
-
+        wallTopY: 60,
         theme: THEMES.squash
       }
     ];
@@ -294,54 +290,75 @@
     beginBtn.onclick = beginGame;
 
     // -----------------------------
-    // Characters (5-tier) + Outfits
+    // Characters (tiers) + outfits
     // -----------------------------
     const TIER_MULT = Object.freeze({ 1: 0.7, 2: 0.85, 3: 1.00, 4: 1.15, 5: 1.3 });
-    const CATCH_W_MULT = Object.freeze({ 1: 0.85, 2: 0.95, 3: 1.05, 4: 1.05, 5: 1.15 });
+    const CATCH_W_MULT = Object.freeze({ 1: 0.80, 2: 0.90, 3: 1.0, 4: 1.10, 5: 1.20 });
 
     const CHAR_COLORS = Object.freeze({
       Brenden: "#f59e0b",
       Xavier:  "#3b82f6",
       Liam:    "#22c55e",
       Edward:  "#ef4444",
-      Ethan:   "#facc15"
+      Ethan:   "#facc15",
+      Jake:    "#9ca3af",
+      Hans:    "#d2b48c",
+      Alex:    "#7f1d1d"
     });
 
-    // NEW: layered outfits (pants 35%, shirt 30%, face 25%, hair 10%)
+    const DEFAULT_NOTE = "#111827";
+
     const DEFAULT_OUTFIT = {
       hair: "#3f3f46",
       face: "#fde68a",
       shirt: "#22c55e",
       pants: "#1e293b",
-      outline: "#111827"
+      outline: DEFAULT_NOTE
     };
 
-const CHAR_OUTFITS = Object.freeze({
-  // Xavier: Hair dark brown, Shirt white, Pants dark blue
-  Xavier:  { hair:"#3b2f2f", face:"#fde68a", shirt:"#ffffff", pants:"#1e3a8a", outline:"#111827" },
+    const CHAR_OUTFITS = Object.freeze({
+      Xavier:  { hair:"#3b2f2f", face:"#fde68a", shirt:"#ffffff", pants:"#1e3a8a", outline:DEFAULT_NOTE },
+      Brenden: { hair:"#f97316", face:"#fde68a", shirt:"#93c5fd", pants:"#1e3a8a", outline:DEFAULT_NOTE },
 
-  // Brenden: Hair orange, Shirt light blue, Pants dark blue
-  Brenden: { hair:"#f97316", face:"#fde68a", shirt:"#93c5fd", pants:"#1e3a8a", outline:"#111827" },
+      // Ethan: hair brown, face fair, shirt green, pants black
+      Ethan:   { hair:"#8b5e34", face:"#fef3c7", shirt:"#22c55e", pants:"#000000", outline:DEFAULT_NOTE },
 
-  // Ethan: Hair brown, Shirt green, Pants black
-  Ethan:   { hair:"#8b5e34", face:"#fef3c7", shirt:"#22c55e", pants:"#000000", outline:"#111827" },
+      // Edward: hair brown, face light pinkish, shirt red, pants tan
+      Edward:  { hair:"#8b5e34", face:"#fee2e2", shirt:"#ef4444", pants:"#d2b48c", outline:DEFAULT_NOTE },
 
-  // Edward: Hair brown, Shirt red, Pants tan
-  Edward:  { hair:"#8b5e34", face:"#fee2e2", shirt:"#ef4444", pants:"#d2b48c", outline:"#111827" },
+      // Liam: hair black, face fair, shirt blue, pants camel
+      Liam:    { hair:"#000000", face:"#fef3c7", shirt:"#3b82f6", pants:"#c19a6b", outline:DEFAULT_NOTE },
 
-  // Liam: Hair black, Shirt blue, Pants camel
-  Liam:    { hair:"#000000", face:"#fef3c7", shirt:"#3b82f6", pants:"#c19a6b", outline:"#111827" }
-});
+      // Jake: Blonde hair, fair skin, dark grey shirt, off white pants
+      Jake:    { hair:"#f7e27c", face:"#fef3c7", shirt:"#374151", pants:"#f5f5f4", outline:DEFAULT_NOTE },
 
+      // Hans: Black hair, brown skin, tan shirt, black pants
+      Hans:    { hair:"#000000", face:"#8d5524", shirt:"#d2b48c", pants:"#000000", outline:DEFAULT_NOTE },
+
+      // Alex: light brown hair, fair skin, maroon shirt, grey pants
+      Alex:    { hair:"#c4a484", face:"#fde68a", shirt:"#7f1d1d", pants:"#6b7280", outline:DEFAULT_NOTE }
+    });
+
+    // ✅ Stats EXACTLY as you listed:
+    // Edward 1 5 2 4
+    // Ethan  5 5 5 5
+    // Xavier 5 4 1 2
+    // Brenden 4 2 5 1
+    // Liam   3 3 3 3
+    // Alex   5 5 1 1
+    // Hans   1 1 5 5
+    // Jake   2 1 4 5
     const CHARACTERS = [
-      { id: 0, name: "Brenden", tiers: { control: 2, accuracy: 1, speed: 5, catching: 4 } },
-      { id: 1, name: "Ethan",   tiers: { control: 1, accuracy: 2, speed: 4, catching: 5 } },
+      { id: 0, name: "Brenden", tiers: { control: 4, accuracy: 2, speed: 5, catching: 1 } },
+      { id: 1, name: "Ethan",   tiers: { control: 5, accuracy: 5, speed: 5, catching: 5 } },
       { id: 2, name: "Xavier",  tiers: { control: 5, accuracy: 4, speed: 1, catching: 2 } },
-      { id: 3, name: "Edward",  tiers: { control: 4, accuracy: 5, speed: 2, catching: 1 } },
-      { id: 4, name: "Liam",    tiers: { control: 3, accuracy: 3, speed: 3, catching: 3 } }
+      { id: 3, name: "Edward",  tiers: { control: 1, accuracy: 5, speed: 2, catching: 4 } },
+      { id: 4, name: "Liam",    tiers: { control: 3, accuracy: 3, speed: 3, catching: 3 } },
+      { id: 5, name: "Jake",    tiers: { control: 2, accuracy: 1, speed: 4, catching: 5 } },
+      { id: 6, name: "Hans",    tiers: { control: 1, accuracy: 1, speed: 5, catching: 5 } },
+      { id: 7, name: "Alex",    tiers: { control: 5, accuracy: 5, speed: 1, catching: 1 } }
     ].map(c => ({
       ...c,
-      // keep color available for future UI ideas, but drawing now uses outfit
       color: CHAR_COLORS[c.name] ?? "#d9f7d0",
       outfit: CHAR_OUTFITS[c.name] ?? DEFAULT_OUTFIT,
       stats: {
@@ -360,7 +377,9 @@ const CHAR_OUTFITS = Object.freeze({
         : currentCharacter.id;
 
       for (let i = 0; i < CHARACTERS.length; i++) {
-        document.getElementById("ch" + i).classList.toggle("active", i === activeCharId);
+        const btn = document.getElementById("ch" + i);
+        if (!btn) continue;
+        btn.classList.toggle("active", i === activeCharId);
       }
     }
 
@@ -389,11 +408,10 @@ const CHAR_OUTFITS = Object.freeze({
       }
     }
 
-    document.getElementById("ch0").onclick = () => applyCharacter(0);
-    document.getElementById("ch1").onclick = () => applyCharacter(1);
-    document.getElementById("ch2").onclick = () => applyCharacter(2);
-    document.getElementById("ch3").onclick = () => applyCharacter(3);
-    document.getElementById("ch4").onclick = () => applyCharacter(4);
+    for (let i = 0; i < 8; i++) {
+      const el = document.getElementById("ch" + i);
+      if (el) el.onclick = () => applyCharacter(i);
+    }
 
     // -----------------------------
     // Level selection
@@ -427,7 +445,8 @@ const CHAR_OUTFITS = Object.freeze({
       }
 
       for (let i = 0; i < 4; i++) {
-        document.getElementById("btn" + i).classList.toggle("active", i === levelIndex);
+        const b = document.getElementById("btn" + i);
+        if (b) b.classList.toggle("active", i === levelIndex);
       }
 
       startNewShot();
@@ -509,7 +528,6 @@ const CHAR_OUTFITS = Object.freeze({
       if (state === State.TITLE || state === State.MATCH_OVER || state === State.SINGLE_OVER) return;
       if (!arena.level) return;
       if (match.enabled && !match.started) return;
-
       if (isPlayerGrounded()) player.vy = -jumpImpulse();
     }
 
@@ -884,6 +902,7 @@ const CHAR_OUTFITS = Object.freeze({
       state = State.FLIGHT;
       updateStatus("Ball in flight.");
     }
+
 
     // -----------------------------
     // Update loops
@@ -1299,12 +1318,19 @@ const CHAR_OUTFITS = Object.freeze({
     function drawRoof() {
       if (arena.roofType === "none") return;
 
-      ctx.strokeStyle = arena.theme.roof;
-      ctx.lineWidth = 12;
-
-      ctx.beginPath();
       const y0 = roofAtX(playLeft);
       const y1 = roofAtX(wallX);
+
+      ctx.strokeStyle = "#000";
+      ctx.lineWidth = 18;
+      ctx.beginPath();
+      ctx.moveTo(playLeft, y0);
+      ctx.lineTo(wallX, y1);
+      ctx.stroke();
+
+      ctx.strokeStyle = arena.theme.roof;
+      ctx.lineWidth = 12;
+      ctx.beginPath();
       ctx.moveTo(playLeft, y0);
       ctx.lineTo(wallX, y1);
       ctx.stroke();
@@ -1312,7 +1338,6 @@ const CHAR_OUTFITS = Object.freeze({
       if (arena.level?.id === 0) {
         ctx.strokeStyle = "rgba(0,0,0,0.25)";
         ctx.lineWidth = 16;
-
         ctx.beginPath();
         ctx.moveTo(playLeft, y0 + 6);
         ctx.lineTo(wallX, y1 + 6);
@@ -1320,35 +1345,28 @@ const CHAR_OUTFITS = Object.freeze({
       }
     }
 
-    // NEW: layered character renderer
     function drawCharacter(x, y, w, h, outfit) {
       const hairH  = h * 0.10;
       const faceH  = h * 0.25;
       const shirtH = h * 0.30;
       const pantsH = h * 0.35;
 
-      // Hair
       ctx.fillStyle = outfit.hair;
       ctx.fillRect(x, y, w, hairH);
 
-      // Face
       ctx.fillStyle = outfit.face;
       ctx.fillRect(x, y + hairH, w, faceH);
 
-      // Shirt
       ctx.fillStyle = outfit.shirt;
       ctx.fillRect(x, y + hairH + faceH, w, shirtH);
 
-      // Pants
       ctx.fillStyle = outfit.pants;
       ctx.fillRect(x, y + hairH + faceH + shirtH, w, pantsH);
 
-      // Outline
       ctx.strokeStyle = outfit.outline ?? "#111827";
       ctx.lineWidth = 2;
       ctx.strokeRect(x, y, w, h);
 
-      // Tiny eyes (optional but helps the face read)
       const eyeY = y + hairH + faceH * 0.48;
       const eyeDX = w * 0.18;
       const eyeR = Math.max(1.8, Math.min(3.2, w * 0.03));
@@ -1360,7 +1378,6 @@ const CHAR_OUTFITS = Object.freeze({
       ctx.fill();
     }
 
-    // Panel click-to-select P1/P2 during setup
     function panelHitTestPlayerBlocks(mx, my) {
       if (!match.enabled || match.started) return null;
       if (mx > PANEL_W) return null;
@@ -1566,23 +1583,32 @@ const CHAR_OUTFITS = Object.freeze({
 
       drawRoof();
 
+      // FLOOR
       ctx.fillStyle = arena.theme?.floor;
       ctx.fillRect(playLeft, floorY, W - playLeft, H - floorY);
+
+      ctx.strokeStyle = "#000";
+      ctx.lineWidth = 3;
+      ctx.strokeRect(playLeft, floorY, W - playLeft, H - floorY);
 
       if (arena.level?.id === 1) {
         drawCraters("rgba(255,255,255,0.25)", 22, "floor");
         drawCraters("rgba(255,255,255,0.25)", 14, "wall");
       }
 
+      // WALL
       ctx.fillStyle = arena.theme?.wall;
       ctx.fillRect(wallX, arena.wallTopY, W - wallX, floorY - arena.wallTopY);
+
+      ctx.strokeStyle = "#000";
+      ctx.lineWidth = 3;
+      ctx.strokeRect(wallX, arena.wallTopY, W - wallX, floorY - arena.wallTopY);
 
       if (arena.level?.id === 2) {
         drawConcreteTexture(playLeft, floorY, W - playLeft, H - floorY);
         drawConcreteTexture(wallX, arena.wallTopY, W - wallX, floorY - arena.wallTopY);
       }
 
-      // NEW: draw layered character
       const outfit = currentCharacter?.outfit ?? DEFAULT_OUTFIT;
       drawCharacter(player.x, player.y, player.w, player.h, outfit);
 
