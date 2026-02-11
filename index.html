@@ -546,9 +546,15 @@
     }
 
     // -----------------------------
-    // Ball
+    // Ball (with spin)
     // -----------------------------
-    const ball = { r: 12, x: 0, y: 0, vx: 0, vy: 0, active: false };
+    const ball = { r: 12, x: 0, y: 0, vx: 0, vy: 0, active: false, spin: 0, spinV: 0 };
+
+    // -----------------------------
+    // Screen shake (on 100)
+    // -----------------------------
+    let screenShake = 0;     // seconds remaining
+    let screenShakeMag = 0;  // pixels
 
     // -----------------------------
     // State machine
@@ -898,6 +904,10 @@
       ball.vx = Math.max(160, vxRaw);
       ball.vy = -Math.sin(a) * speed;
 
+      // spin init
+      ball.spin = 0;
+      ball.spinV = (ball.vx >= 0 ? 1 : -1) * (6 + 10 * (meter.lockedPower ?? 0.5)); // rad/s
+
       shot = newShotContext();
       state = State.FLIGHT;
       updateStatus("Ball in flight.");
@@ -947,6 +957,10 @@
       ball.vy += arena.gravity * dt;
       ball.x += ball.vx * dt;
       ball.y += ball.vy * dt;
+
+      // spin update
+      ball.spin += ball.spinV * dt;
+      ball.spinV *= 0.995; // tiny decay
 
       ball.vx *= arena.airDrag;
       ball.vy *= arena.airDrag;
@@ -1153,7 +1167,11 @@
         if (match.enabled) match.players[match.activeIndex].catches++;
         else singleStats.catches++;
 
-        if (pts === 100) showPopup("Walmart 100!", { size: 84, color: "#3b82f6" });
+        if (pts === 100) {
+          showPopup("Walmart 100!", { size: 84, color: "#3b82f6" });
+          screenShake = 0.18;
+          screenShakeMag = 10;
+        }
 
         if (match.enabled) {
           endTurnWithPoints(pts);
@@ -1206,6 +1224,11 @@
 
       updatePopup(dt);
 
+      // decay screen shake
+      if (screenShake > 0) {
+        screenShake = Math.max(0, screenShake - dt);
+      }
+
       const canPlay = !match.enabled || match.started;
 
       if (arena.level && state !== State.MATCH_OVER && state !== State.SINGLE_OVER && canPlay) updatePlayer(dt);
@@ -1257,12 +1280,20 @@
       ctx.fillRect(x, barY, barW, barH);
 
       const mx = x + meter.value * barW;
+
+      // glow marker
+      ctx.save();
+      ctx.shadowColor = "#rgba(239,68,68,0.15)";
+      ctx.shadowBlur = .5;
+
       ctx.strokeStyle = "#ef4444";
-      ctx.lineWidth = 3;
+      ctx.lineWidth = 5;
       ctx.beginPath();
       ctx.moveTo(mx, barY - 8);
       ctx.lineTo(mx, barY + barH + 8);
       ctx.stroke();
+
+      ctx.restore();
 
       ctx.fillStyle = arena.theme.ui;
       ctx.font = "13px system-ui";
@@ -1297,12 +1328,19 @@
 
       const my = y + (1 - meter.value) * barH;
 
+      // glow marker
+      ctx.save();
+      ctx.shadowColor = "#ef4444";
+      ctx.shadowBlur = 12;
+
       ctx.strokeStyle = "#ef4444";
-      ctx.lineWidth = 3;
+      ctx.lineWidth = 5;
       ctx.beginPath();
       ctx.moveTo(x - 8, my);
       ctx.lineTo(x + barW + 8, my);
       ctx.stroke();
+
+      ctx.restore();
 
       ctx.fillStyle = arena.theme.ui;
       ctx.font = "13px system-ui";
@@ -1346,6 +1384,12 @@
     }
 
     function drawCharacter(x, y, w, h, outfit) {
+      // Soft shadow (character depth)
+      ctx.save();
+      ctx.shadowColor = "rgba(0,0,0,0.25)";
+      ctx.shadowBlur = 12;
+      ctx.shadowOffsetY = 6;
+
       const hairH  = h * 0.10;
       const faceH  = h * 0.25;
       const shirtH = h * 0.30;
@@ -1376,6 +1420,8 @@
       ctx.arc(x + w * 0.5 - eyeDX, eyeY, eyeR, 0, Math.PI * 2);
       ctx.arc(x + w * 0.5 + eyeDX, eyeY, eyeR, 0, Math.PI * 2);
       ctx.fill();
+
+      ctx.restore();
     }
 
     function panelHitTestPlayerBlocks(mx, my) {
@@ -1576,9 +1622,23 @@
     function draw() {
       ctx.clearRect(0, 0, W, H);
 
+      // apply screen shake to whole scene
+      ctx.save();
+      if (screenShake > 0) {
+        const dx = (Math.random() - 0.5) * 2 * screenShakeMag;
+        const dy = (Math.random() - 0.5) * 2 * screenShakeMag;
+        ctx.translate(dx, dy);
+      }
+
       drawSidePanel();
 
-      ctx.fillStyle = arena.theme?.bg ?? "#f8fafc";
+      // Background (subtle vertical gradient)
+      const bgTop = arena.theme?.bg ?? "#f8fafc";
+      const bgBottom = "rgba(255,255,255,0.85)";
+      const grad = ctx.createLinearGradient(0, 0, 0, H);
+      grad.addColorStop(0, bgTop);
+      grad.addColorStop(1, bgBottom);
+      ctx.fillStyle = grad;
       ctx.fillRect(playLeft, 0, W - playLeft, H);
 
       drawRoof();
@@ -1619,13 +1679,37 @@
       ctx.lineWidth = 2;
       ctx.strokeRect(hands.x, hands.y, hands.w, hands.h);
 
+      // Ball shadow + glow + spin seam
+      ctx.save();
+      ctx.shadowColor = "rgba(0,0,0,0.3)";
+      ctx.shadowBlur = 8;
+      ctx.shadowOffsetY = 4;
+
+      // Glow when shot has points pending (i.e., valid wall hit)
+      if (ball.active && (shot?.pendingPoints ?? 0) > 0 && !shot.invalid) {
+        ctx.shadowColor = "rgba(59,130,246,0.6)";
+        ctx.shadowBlur = 20;
+      }
+
+      ctx.translate(ball.x, ball.y);
+      ctx.rotate(ball.spin);
+
       ctx.beginPath();
       ctx.fillStyle = "#ef4444";
       ctx.strokeStyle = "#111827";
       ctx.lineWidth = 2;
-      ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
+      ctx.arc(0, 0, ball.r, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
+
+      // seam line to show rotation
+      ctx.strokeStyle = "rgba(255,255,255,0.65)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(0, 0, ball.r * 0.65, -0.6, 0.8);
+      ctx.stroke();
+
+      ctx.restore();
 
       if (lastWallHitY != null) {
         ctx.strokeStyle = "#ef4444";
@@ -1673,6 +1757,9 @@
 
       if (state === State.SINGLE_OVER) drawSingleOverOverlay();
       if (state === State.TITLE) drawTitleScreen();
+
+      // end screen shake wrap
+      ctx.restore();
     }
 
     // -----------------------------
