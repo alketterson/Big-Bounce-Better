@@ -1,0 +1,1654 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Big Bounce (Levels + Characters + Hotseat)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { margin: 0; background: #111; color: #eee; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; }
+    .hud { padding: 10px 14px; text-align: center; }
+    canvas { display: block; margin: 0 auto; background: #f8fafc; }
+    .hint { opacity: 0.85; font-size: 14px; margin-top: 6px; }
+    .row { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-top: 10px; }
+    button {
+      cursor: pointer;
+      border: 1px solid rgba(255,255,255,0.18);
+      background: rgba(255,255,255,0.08);
+      color: #fff;
+      padding: 8px 12px;
+      border-radius: 10px;
+      font-weight: 600;
+    }
+    button.active {
+      background: rgba(34, 197, 94, 0.22);
+      border-color: rgba(34, 197, 94, 0.6);
+    }
+    button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+  </style>
+</head>
+<body>
+  <div class="hud">
+    <div><b>Big Bounce</b> — Space/Click to lock <b>Power</b>, then <b>Angle</b>. Move with ← → to catch. Jump with ↑</div>
+    <div class="hint">Rules: bounce → wall-face (before roof) → catch. Roof-before-wall = 0. R = reset</div>
+
+    <div class="row">
+      <button id="modeSingle">Single Player</button>
+      <button id="modeMulti">2P Hotseat (Rounds to 7)</button>
+      <button id="btnBegin" disabled>Begin Game</button>
+    </div>
+
+    <div class="row">
+      <button id="btn0">Map 1: Townhouse</button>
+      <button id="btn1">Map 2: Moon</button>
+      <button id="btn2">Map 3: Berlin Wall</button>
+    </div>
+
+    <div class="row">
+      <button id="ch0">Brenden</button>
+      <button id="ch1">Ethan</button>
+      <button id="ch2">Xavier</button>
+      <button id="ch3">Edward</button>
+      <button id="ch4">Liam</button>
+    </div>
+
+    <div id="status" style="margin-top:10px;"></div>
+  </div>
+
+  <canvas id="c" width="1400" height="900"></canvas>
+
+  <script>
+    const canvas = document.getElementById("c");
+    const ctx = canvas.getContext("2d");
+    const statusEl = document.getElementById("status");
+    const beginBtn = document.getElementById("btnBegin");
+
+    // -----------------------------
+    // World + Layout
+    // -----------------------------
+    const W = canvas.width;
+    const H = canvas.height;
+
+    const PANEL_W = 220;              // LEFT VERTICAL MULTIPLAYER PANEL
+    const playLeft = PANEL_W;         // gameplay starts here
+    const floorY = H - 20;
+    const wallX = W - 140;
+
+    // -----------------------------
+    // Single-player run config + timeout
+    // -----------------------------
+    const SINGLE_TURNS = 10;
+    const SINGLE_SHOT_TIMEOUT_S = 8;
+
+    // counts down only for single-player shots while ball is active
+    let singleShotTimer = 0;
+
+    function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+
+    // -----------------------------
+    // Popups (big on-screen callouts)
+    // -----------------------------
+    const popup = {
+      text: "",
+      color: "#ffffff",
+      size: 72,
+      timer: 0,
+      duration: 1.2
+    };
+
+    function showPopup(text, opts = {}) {
+      popup.text = text;
+      popup.color = opts.color ?? "#ffffff";
+      popup.size = opts.size ?? 72;
+      popup.duration = opts.duration ?? 1.2;
+      popup.timer = popup.duration;
+    }
+
+    function updatePopup(dt) {
+      if (popup.timer > 0) popup.timer = Math.max(0, popup.timer - dt);
+    }
+
+    function drawPopup() {
+      if (popup.timer <= 0 || !popup.text) return;
+
+      const t = popup.timer / popup.duration; // 1 -> 0
+      const alpha = Math.min(1, Math.max(0, t));
+
+      const cx = playLeft + (W - playLeft) / 2;
+      const cy = H * 0.22;
+
+      ctx.save();
+      ctx.globalAlpha = 0.15 + 0.85 * alpha;
+
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.font = `900 ${popup.size}px Trebuchet MS, system-ui`;
+
+      ctx.lineWidth = 8;
+      ctx.strokeStyle = "rgba(0,0,0,0.45)";
+      ctx.strokeText(popup.text, cx, cy);
+
+      ctx.fillStyle = popup.color;
+      ctx.fillText(popup.text, cx, cy);
+
+      ctx.restore();
+    }
+
+    // -----------------------------
+    // Level Themes (themed arenas)
+    // -----------------------------
+    const THEMES = {
+      townhouse: {
+        bg: "#e5e7eb",
+        floor: "#8b5a2b",
+        wall: "#f5f5f4",
+        roof: "#2a2a2a",
+        ui: "#0f172a"
+      },
+      moon:      { bg: "#0b1020", floor: "#7a7a7a", wall: "#c7c7c7", roof: "#e5e7eb", ui: "#e5e7eb" },
+      berlin: {
+        bg: "#cfe8f7",
+        floor: "#9ca3af",
+        wall: "#374151",
+        roof: "#000000",
+        ui: "#0f172a"
+      }
+    };
+
+    // -----------------------------
+    // Levels
+    // -----------------------------
+    const LEVELS = [
+      {
+        id: 0, name: "Townhouse", roofType: "angled",
+        roofLeftY: 450, roofRightY: 120,
+        gravity: 1900, restitutionFloor: 0.80, restitutionWall: 0.85, restitutionRoof: 0.55,
+        wallTopY: null,
+        theme: THEMES.townhouse
+      },
+      {
+        id: 1, name: "Moon", roofType: "none",
+        roofY: 110,
+        gravity: 700, restitutionFloor: 0.55, restitutionWall: 0.82, restitutionRoof: 0.50,
+        wallTopY: null,
+        theme: THEMES.moon
+      },
+      {
+        id: 2, name: "Berlin Wall", roofType: "none",
+        gravity: 2000, restitutionFloor: 0.88, restitutionWall: 0.87, restitutionRoof: 0.0,
+        wallTopY: 0,
+        theme: THEMES.berlin
+      }
+    ];
+
+    const arena = {
+      level: null,
+      theme: THEMES.townhouse,
+      roofType: "none",
+      gravity: 1900,
+      restitutionFloor: 0.80,
+      restitutionWall: 0.85,
+      restitutionRoof: 0.55,
+      floorFriction: 0.987,
+      airDrag: 0.999,
+      wallTopY: 0,
+      roofY: 0,
+      roofLeftY: 0,
+      roofRightY: 0
+    };
+
+    function roofAtX(x) {
+      if (arena.roofType === "none") return -1e9;
+      if (arena.roofType === "flat") return arena.roofY;
+      const t = clamp((x - playLeft) / (wallX - playLeft), 0, 1);
+      return arena.roofLeftY + (arena.roofRightY - arena.roofLeftY) * t;
+    }
+
+    // -----------------------------
+    // Multiplayer (Hotseat)
+    // -----------------------------
+    const match = {
+      enabled: false,
+      started: false,
+      roundsToWin: 7,
+      roundNum: 1,
+      roundStarter: 0,
+      activeIndex: 0,
+      winnerIndex: null,
+      roundShots: [null, null],
+      setupPickIndex: 0,
+      firstPlayerScoredZeroThisRound: false,
+      players: [
+        { name: "P1", characterId: null, roundsWon: 0, lastThrow: null, throws: 0, sum: 0, walmart100s: 0, layups: 0, attempts: 0, catches: 0, best: null },
+        { name: "P2", characterId: null, roundsWon: 0, lastThrow: null, throws: 0, sum: 0, walmart100s: 0, layups: 0, attempts: 0, catches: 0, best: null }
+      ]
+    };
+
+    function resetPlayerStats(p) {
+      p.throws = 0; p.sum = 0; p.walmart100s = 0; p.layups = 0; p.attempts = 0; p.catches = 0; p.best = null; p.lastThrow = null;
+    }
+
+    function canBeginGame() {
+      if (!match.enabled) return false;
+      const okLevel = !!arena.level;
+      const okChars = match.players[0].characterId != null && match.players[1].characterId != null;
+      return okLevel && okChars && !match.started;
+    }
+
+    function refreshBeginButton() {
+      beginBtn.disabled = !canBeginGame();
+      beginBtn.classList.toggle("active", canBeginGame());
+    }
+
+    function beginGame() {
+      if (!canBeginGame()) return;
+      match.started = true;
+
+      match.roundNum = 1;
+      match.roundStarter = 0;
+      match.activeIndex = match.roundStarter;
+      match.winnerIndex = null;
+      match.roundShots = [null, null];
+      match.firstPlayerScoredZeroThisRound = false;
+
+      match.players[0].roundsWon = 0; match.players[1].roundsWon = 0;
+      resetPlayerStats(match.players[0]);
+      resetPlayerStats(match.players[1]);
+
+      setCurrentCharacterForTurn();
+      startNewShot();
+      state = State.POWER_METER;
+      updateStatus("Game started! P1 lock POWER.");
+      refreshBeginButton();
+    }
+
+    beginBtn.onclick = beginGame;
+
+    // -----------------------------
+    // Characters (5-tier) + Outfits
+    // -----------------------------
+    const TIER_MULT = Object.freeze({ 1: 0.7, 2: 0.85, 3: 1.00, 4: 1.15, 5: 1.3 });
+    const CATCH_W_MULT = Object.freeze({ 1: 0.85, 2: 0.95, 3: 1.05, 4: 1.05, 5: 1.15 });
+
+    const CHAR_COLORS = Object.freeze({
+      Brenden: "#f59e0b",
+      Xavier:  "#3b82f6",
+      Liam:    "#22c55e",
+      Edward:  "#ef4444",
+      Ethan:   "#facc15"
+    });
+
+    // NEW: layered outfits (pants 35%, shirt 30%, face 25%, hair 10%)
+    const DEFAULT_OUTFIT = {
+      hair: "#3f3f46",
+      face: "#fde68a",
+      shirt: "#22c55e",
+      pants: "#1e293b",
+      outline: "#111827"
+    };
+
+const CHAR_OUTFITS = Object.freeze({
+  // Xavier: Hair dark brown, Shirt white, Pants dark blue
+  Xavier:  { hair:"#3b2f2f", face:"#fde68a", shirt:"#ffffff", pants:"#1e3a8a", outline:"#111827" },
+
+  // Brenden: Hair orange, Shirt light blue, Pants dark blue
+  Brenden: { hair:"#f97316", face:"#fde68a", shirt:"#93c5fd", pants:"#1e3a8a", outline:"#111827" },
+
+  // Ethan: Hair brown, Shirt green, Pants black
+  Ethan:   { hair:"#8b5e34", face:"#fef3c7", shirt:"#22c55e", pants:"#000000", outline:"#111827" },
+
+  // Edward: Hair brown, Shirt red, Pants tan
+  Edward:  { hair:"#8b5e34", face:"#fee2e2", shirt:"#ef4444", pants:"#d2b48c", outline:"#111827" },
+
+  // Liam: Hair black, Shirt blue, Pants camel
+  Liam:    { hair:"#000000", face:"#fef3c7", shirt:"#3b82f6", pants:"#c19a6b", outline:"#111827" }
+});
+
+    const CHARACTERS = [
+      { id: 0, name: "Brenden", tiers: { control: 2, accuracy: 1, speed: 5, catching: 4 } },
+      { id: 1, name: "Ethan",   tiers: { control: 1, accuracy: 2, speed: 4, catching: 5 } },
+      { id: 2, name: "Xavier",  tiers: { control: 5, accuracy: 4, speed: 1, catching: 2 } },
+      { id: 3, name: "Edward",  tiers: { control: 4, accuracy: 5, speed: 2, catching: 1 } },
+      { id: 4, name: "Liam",    tiers: { control: 3, accuracy: 3, speed: 3, catching: 3 } }
+    ].map(c => ({
+      ...c,
+      // keep color available for future UI ideas, but drawing now uses outfit
+      color: CHAR_COLORS[c.name] ?? "#d9f7d0",
+      outfit: CHAR_OUTFITS[c.name] ?? DEFAULT_OUTFIT,
+      stats: {
+        control:  TIER_MULT[c.tiers.control],
+        accuracy: TIER_MULT[c.tiers.accuracy],
+        speed:    TIER_MULT[c.tiers.speed],
+        catchingWidth: CATCH_W_MULT[c.tiers.catching]
+      }
+    }));
+
+    let currentCharacter = CHARACTERS[0];
+
+    function updateCharacterButtons() {
+      const activeCharId = match.enabled
+        ? (match.started ? match.players[match.activeIndex].characterId : match.players[match.setupPickIndex].characterId)
+        : currentCharacter.id;
+
+      for (let i = 0; i < CHARACTERS.length; i++) {
+        document.getElementById("ch" + i).classList.toggle("active", i === activeCharId);
+      }
+    }
+
+    function setCurrentCharacterForTurn() {
+      if (!match.enabled) return;
+      const cid = match.players[match.activeIndex].characterId;
+      currentCharacter = CHARACTERS[cid ?? 0];
+      updateCharacterButtons();
+    }
+
+    function applyCharacter(charIndex) {
+      if (match.enabled && match.started) return;
+
+      if (match.enabled) {
+        match.players[match.setupPickIndex].characterId = charIndex;
+        const cid = match.players[match.setupPickIndex].characterId;
+        currentCharacter = CHARACTERS[cid ?? 0];
+
+        updateCharacterButtons();
+        updateStatus(`Assigned ${currentCharacter.name} to P${match.setupPickIndex + 1}`);
+        refreshBeginButton();
+      } else {
+        currentCharacter = CHARACTERS[charIndex];
+        updateCharacterButtons();
+        updateStatus(`Character: ${currentCharacter.name}`);
+      }
+    }
+
+    document.getElementById("ch0").onclick = () => applyCharacter(0);
+    document.getElementById("ch1").onclick = () => applyCharacter(1);
+    document.getElementById("ch2").onclick = () => applyCharacter(2);
+    document.getElementById("ch3").onclick = () => applyCharacter(3);
+    document.getElementById("ch4").onclick = () => applyCharacter(4);
+
+    // -----------------------------
+    // Level selection
+    // -----------------------------
+    function applyLevel(levelIndex) {
+      if (match.enabled && match.started) return;
+
+      const L = LEVELS[levelIndex];
+      arena.level = L;
+      arena.theme = L.theme || THEMES.townhouse;
+
+      arena.roofType = L.roofType;
+      arena.gravity = L.gravity;
+      arena.restitutionFloor = L.restitutionFloor;
+      arena.restitutionWall = L.restitutionWall;
+      arena.restitutionRoof = L.restitutionRoof;
+
+      if (L.roofType === "flat") {
+        arena.roofY = L.roofY;
+      } else if (L.roofType === "angled") {
+        arena.roofLeftY = L.roofLeftY;
+        arena.roofRightY = L.roofRightY;
+      }
+
+      if (L.id === 0) {
+        arena.wallTopY = clamp(roofAtX(wallX), 0, floorY - 40);
+      } else if (L.id === 1) {
+        arena.wallTopY = 0;
+      } else {
+        arena.wallTopY = clamp(L.wallTopY, 0, floorY - 40);
+      }
+
+      for (let i = 0; i < 3; i++) {
+        document.getElementById("btn" + i).classList.toggle("active", i === levelIndex);
+      }
+
+      startNewShot();
+      state = State.POWER_METER;
+      updateStatus(`Selected: ${L.name}. Lock POWER.`);
+      refreshBeginButton();
+    }
+
+    document.getElementById("btn0").onclick = () => applyLevel(0);
+    document.getElementById("btn1").onclick = () => applyLevel(1);
+    document.getElementById("btn2").onclick = () => applyLevel(2);
+
+    // -----------------------------
+    // Mode
+    // -----------------------------
+    function setMode(isMulti) {
+      match.enabled = isMulti;
+      match.started = false;
+
+      document.getElementById("modeSingle").classList.toggle("active", !isMulti);
+      document.getElementById("modeMulti").classList.toggle("active", isMulti);
+
+      match.roundNum = 1;
+      match.roundStarter = 0;
+      match.activeIndex = 0;
+      match.winnerIndex = null;
+      match.roundShots = [null, null];
+      match.setupPickIndex = 0;
+      match.firstPlayerScoredZeroThisRound = false;
+
+      match.players[0].roundsWon = 0; match.players[1].roundsWon = 0;
+
+      resetSingleStats();
+      resetPlayerStats(match.players[0]);
+      resetPlayerStats(match.players[1]);
+
+      if (isMulti) {
+        if (match.players[0].characterId == null) match.players[0].characterId = 0;
+        if (match.players[1].characterId == null) match.players[1].characterId = 1;
+        currentCharacter = CHARACTERS[match.players[0].characterId] ?? CHARACTERS[0];
+      } else {
+        currentCharacter = CHARACTERS[0];
+      }
+
+      updateCharacterButtons();
+      resetGame();
+      refreshBeginButton();
+      updateStatus(isMulti ? "2P Hotseat: pick a level, assign chars to P1/P2, then Begin Game." : "Single Player: pick a level.");
+    }
+
+    document.getElementById("modeSingle").onclick = () => setMode(false);
+    document.getElementById("modeMulti").onclick  = () => setMode(true);
+
+    // -----------------------------
+    // Player + Glove + Jump (↑)
+    // -----------------------------
+    const player = {
+      x: playLeft + 20,
+      y: 0,
+      w: 80,
+      h: 110,
+      baseSpeed: 720,
+      vy: 0
+    };
+
+    function groundY() { return floorY - player.h; }
+
+    function isPlayerGrounded() {
+      return player.y >= groundY() - 0.5 && Math.abs(player.vy) < 0.01;
+    }
+
+    function jumpImpulse() {
+      const jumpH = player.h * 0.9;
+      return Math.sqrt(2 * arena.gravity * jumpH);
+    }
+
+    function attemptJump() {
+      if (state === State.TITLE || state === State.MATCH_OVER || state === State.SINGLE_OVER) return;
+      if (!arena.level) return;
+      if (match.enabled && !match.started) return;
+
+      if (isPlayerGrounded()) player.vy = -jumpImpulse();
+    }
+
+    function getHandsRect() {
+      let hw = Math.round(player.w * 0.55);
+      let hh = Math.round(player.h * 0.22);
+
+      const catchMul = currentCharacter?.stats?.catchingWidth ?? 1;
+      hw = Math.round(hw * catchMul);
+
+      const offsetX = Math.round(player.w * 0.10);
+      const hx = player.x + player.w + offsetX;
+      const hy = player.y + Math.round(player.h * 0.35);
+
+      return { x: hx, y: hy, w: hw, h: hh };
+    }
+
+    // -----------------------------
+    // Ball
+    // -----------------------------
+    const ball = { r: 12, x: 0, y: 0, vx: 0, vy: 0, active: false };
+
+    // -----------------------------
+    // State machine
+    // -----------------------------
+    const State = Object.freeze({
+      TITLE: "TITLE",
+      SELECT_LEVEL: "SELECT_LEVEL",
+      POWER_METER: "POWER_METER",
+      ANGLE_METER: "ANGLE_METER",
+      FLIGHT: "FLIGHT",
+      RETURNING: "RETURNING",
+      MATCH_OVER: "MATCH_OVER",
+      SINGLE_OVER: "SINGLE_OVER"
+    });
+    let state = State.TITLE;
+
+    // -----------------------------
+    // Timing meter
+    // -----------------------------
+    const meter = {
+      value: 0.0,
+      dir: 1,
+      basePowerSpeed: 1.35,
+      baseAngleSpeed: 1.35,
+      lockedPower: null,
+      lockedAngleRad: null
+    };
+
+    function effectivePowerSpeed() {
+      const c = currentCharacter?.stats?.control ?? 1;
+      return meter.basePowerSpeed / c;
+    }
+    function effectiveAngleSpeed() {
+      const a = currentCharacter?.stats?.accuracy ?? 1;
+      return meter.baseAngleSpeed / a;
+    }
+
+    // -----------------------------
+    // Shot context
+    // -----------------------------
+    function newShotContext() {
+      return {
+        bouncedBeforeWall: false,
+        hitWall: false,
+        hitRoofBeforeWall: false,
+        wallHitY: null,
+        pendingPoints: 0,
+        invalid: false,
+        invalidReason: "",
+        popupCeilingShown: false
+      };
+    }
+    let shot = newShotContext();
+
+    // -----------------------------
+    // Stats (Single + Multiplayer)
+    // -----------------------------
+    let lastThrowPoints = null;
+    let lastWallHitY = null;
+
+    const singleStats = {
+      throws: 0,
+      sum: 0,
+      walmart100s: 0,
+      layups: 0,
+      attempts: 0,
+      catches: 0,
+      best: null
+    };
+
+    function resetSingleStats() {
+      singleStats.throws = 0;
+      singleStats.sum = 0;
+      singleStats.walmart100s = 0;
+      singleStats.layups = 0;
+      singleStats.attempts = 0;
+      singleStats.catches = 0;
+      singleStats.best = null;
+    }
+
+    function avgScore(stats) { return stats.throws > 0 ? (stats.sum / stats.throws) : 0; }
+    function catchPct(stats) { return stats.attempts > 0 ? (stats.catches / stats.attempts) : 0; }
+
+    // -----------------------------
+    // Scoring helper
+    // -----------------------------
+    function scoreFromWallHit(yHit) {
+      const top = arena.wallTopY + ball.r;
+      const bottom = floorY - ball.r;
+
+      const clampedY = clamp(yHit, top, bottom);
+      const height = bottom - clampedY;
+      const maxHeight = bottom - top;
+
+      const raw = 1 + (99 * (height / maxHeight));
+      return clamp(Math.round(raw), 1, 100);
+    }
+
+    function tiersTextFor(charObj) {
+      const t = charObj?.tiers;
+      if (!t) return "";
+      return `C${t.control} A${t.accuracy} S${t.speed} H${t.catching}`;
+    }
+
+    function updateStatus(extra = "") {
+      const lvl = arena.level ? ` | Level: ${arena.level.name}` : "";
+      if (!match.enabled) {
+        const last = (lastThrowPoints == null) ? "" : ` | Last: ${lastThrowPoints}`;
+        const inv = shot?.invalid ? ` | INVALID: ${shot.invalidReason}` : "";
+        const ch = currentCharacter ? ` | Char: ${currentCharacter.name} (${tiersTextFor(currentCharacter)})` : "";
+
+        const avg = avgScore(singleStats);
+        const best = singleStats.best ?? "-";
+        const pct = Math.round(catchPct(singleStats) * 100);
+        const w100 = singleStats.walmart100s;
+
+        statusEl.textContent =
+          `Avg: ${avg.toFixed(1)} | Best: ${best} | Catch%: ${pct}% | Walmart100s: ${w100}` +
+          `${last}${inv}${lvl}${ch}${extra ? " — " + extra : ""}`;
+      } else {
+        const turn = match.started ? ` | Turn: P${match.activeIndex + 1}` : ` | Setup: click P1/P2 in panel`;
+        statusEl.textContent = `2P Hotseat (to ${match.roundsToWin}) | Round ${match.roundNum}${lvl}${turn}${extra ? " — " + extra : ""}`;
+      }
+    }
+
+    // -----------------------------
+    // Helper: end the run (Single Over)
+    // -----------------------------
+    function endSingleRun() {
+      state = State.SINGLE_OVER;
+      singleShotTimer = 0;
+      updateStatus("RUN OVER");
+    }
+
+    function singleRunIsOver() {
+      return singleStats.attempts >= SINGLE_TURNS && singleStats.throws >= SINGLE_TURNS;
+    }
+
+    // -----------------------------
+    // Input
+    // -----------------------------
+    const keys = {};
+    window.addEventListener("keydown", (e) => {
+      if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " "].includes(e.key) || e.code === "Space") e.preventDefault();
+
+      const wasDown = !!keys[e.key];
+      keys[e.key] = true;
+
+      if (e.key.toLowerCase() === "r") resetGame();
+      if (e.key === " " || e.code === "Space") handleAction();
+
+      if (!wasDown && e.key === "ArrowUp") attemptJump();
+    }, { passive: false });
+
+    window.addEventListener("keyup", (e) => {
+      if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " "].includes(e.key) || e.code === "Space") e.preventDefault();
+      keys[e.key] = false;
+    }, { passive: false });
+
+    canvas.addEventListener("mousedown", () => handleAction());
+
+    // -----------------------------
+    // Crater helper (Moon)
+    // -----------------------------
+    function drawCraters(color, count, area) {
+      ctx.fillStyle = color;
+
+      for (let i = 0; i < count; i++) {
+        const r = 6 + Math.random() * 18;
+
+        let x, y;
+
+        if (area === "floor") {
+          x = playLeft + Math.random() * (W - playLeft - 40);
+          y = floorY - Math.random() * 40;
+        } else {
+          x = wallX + Math.random() * (W - wallX - 20);
+          y = arena.wallTopY + Math.random() * (floorY - arena.wallTopY - 40);
+        }
+
+        ctx.beginPath();
+        ctx.globalAlpha = 0.35;
+        ctx.ellipse(x, y, r * 1.2, r, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+    }
+
+    // -----------------------------
+    // Concrete texture helper (Berlin)
+    // -----------------------------
+    function drawConcreteTexture(x, y, w, h) {
+      ctx.strokeStyle = "rgba(0,0,0,0.08)";
+      ctx.lineWidth = 1;
+
+      for (let i = 0; i < 120; i++) {
+        const px = x + Math.random() * w;
+        const py = y + Math.random() * h;
+
+        ctx.beginPath();
+        ctx.moveTo(px, py);
+        ctx.lineTo(px + Math.random() * 6, py + Math.random() * 6);
+        ctx.stroke();
+      }
+    }
+
+    // -----------------------------
+    // Helpers
+    // -----------------------------
+    function rectsOverlap(a, b) {
+      return a.x < b.x + b.w && a.x + a.w > b.x &&
+             a.y < b.y + b.h && a.y + a.h > b.y;
+    }
+
+    function resetBallToHand() {
+      const hands = getHandsRect();
+      ball.active = false;
+      ball.vx = 0;
+      ball.vy = 0;
+      ball.x = hands.x + hands.w * 0.35;
+      ball.y = hands.y + hands.h * 0.55;
+    }
+
+    function resetMeters() {
+      meter.value = 0.0;
+      meter.dir = 1;
+      meter.lockedPower = null;
+      meter.lockedAngleRad = null;
+    }
+
+    function startNewShot() {
+      shot = newShotContext();
+      resetMeters();
+      resetBallToHand();
+      singleShotTimer = 0;
+      state = arena.level ? State.POWER_METER : State.SELECT_LEVEL;
+      updateStatus(arena.level ? "Ready: lock POWER." : "Select a level to begin.");
+    }
+
+    function resetGame() {
+      lastThrowPoints = null;
+      lastWallHitY = null;
+
+      resetSingleStats();
+      resetPlayerStats(match.players[0]);
+      resetPlayerStats(match.players[1]);
+
+      match.winnerIndex = null;
+      match.roundNum = 1;
+      match.roundStarter = 0;
+      match.activeIndex = 0;
+      match.roundShots = [null, null];
+      match.firstPlayerScoredZeroThisRound = false;
+
+      match.players[0].roundsWon = 0; match.players[1].roundsWon = 0;
+
+      if (match.enabled) match.started = false;
+
+      player.x = playLeft + 20;
+      player.y = groundY();
+      player.vy = 0;
+
+      if (match.enabled) {
+        match.setupPickIndex = 0;
+        currentCharacter = CHARACTERS[match.players[0].characterId ?? 0];
+      }
+
+      startNewShot();
+      refreshBeginButton();
+      updateStatus(match.enabled ? "2P reset. Pick a level, assign chars, Begin Game." : "Reset. Select a level.");
+    }
+
+    // -----------------------------
+    // Meter logic
+    // -----------------------------
+    function meterStep(dt, speed) {
+      meter.value += meter.dir * speed * dt;
+      if (meter.value >= 1) { meter.value = 1; meter.dir = -1; }
+      if (meter.value <= 0) { meter.value = 0; meter.dir = 1; }
+    }
+
+    // -----------------------------
+    // Actions
+    // -----------------------------
+    function startFromTitle() {
+      state = State.SELECT_LEVEL;
+      updateStatus(match.enabled ? "Pick a level, assign chars, then Begin Game." : "Pick a level to begin.");
+      refreshBeginButton();
+    }
+
+    function handleAction() {
+      if (state === State.TITLE) { startFromTitle(); return; }
+
+      if (state === State.MATCH_OVER) return;
+      if (state === State.SELECT_LEVEL) return;
+      if (!arena.level) return;
+
+      if (state === State.SINGLE_OVER) return;
+
+      if (!match.enabled && singleStats.attempts >= SINGLE_TURNS) {
+        endSingleRun();
+        return;
+      }
+
+      if (match.enabled && !match.started) return;
+
+      if (state === State.POWER_METER) {
+        meter.lockedPower = meter.value;
+        state = State.ANGLE_METER;
+
+        meter.value = 0.5;
+        meter.dir = (Math.random() < 0.5) ? -1 : 1;
+
+        updateStatus("Power locked. Lock ANGLE.");
+        return;
+      }
+
+      if (state === State.ANGLE_METER) {
+        const minDeg = -90;
+        const maxDeg = -60;
+        const deg = minDeg + (maxDeg - minDeg) * meter.value;
+        meter.lockedAngleRad = (deg * Math.PI) / 180;
+
+        launchBall();
+        return;
+      }
+    }
+
+    function launchBall() {
+      const p = meter.lockedPower ?? 0.5;
+
+      const minSpeed = 950;
+      const maxSpeed = 2200;
+      const speed = minSpeed + (maxSpeed - minSpeed) * p;
+
+      const a = meter.lockedAngleRad ?? (-75 * Math.PI / 180);
+
+      resetBallToHand();
+      ball.active = true;
+
+      if (match.enabled) match.players[match.activeIndex].attempts++;
+      else singleStats.attempts++;
+
+      if (!match.enabled) singleShotTimer = SINGLE_SHOT_TIMEOUT_S;
+
+      const vxRaw = Math.cos(a) * speed;
+      ball.vx = Math.max(160, vxRaw);
+      ball.vy = -Math.sin(a) * speed;
+
+      shot = newShotContext();
+      state = State.FLIGHT;
+      updateStatus("Ball in flight.");
+    }
+
+    // -----------------------------
+    // Update loops
+    // -----------------------------
+    function updatePlayer(dt) {
+      const left = keys["ArrowLeft"];
+      const right = keys["ArrowRight"];
+
+      const speedMul = currentCharacter?.stats?.speed ?? 1;
+      const effectiveSpeed = player.baseSpeed * speedMul;
+
+      if (left) player.x -= effectiveSpeed * dt;
+      if (right) player.x += effectiveSpeed * dt;
+
+      player.x = clamp(player.x, playLeft, wallX - player.w - 10);
+
+      player.vy += arena.gravity * dt;
+      player.y += player.vy * dt;
+
+      const gy = groundY();
+      if (player.y > gy) { player.y = gy; player.vy = 0; }
+
+      const hands = getHandsRect();
+      const overflow = (hands.x + hands.w) - (wallX - 6);
+      if (overflow > 0) {
+        player.x -= overflow;
+        player.x = clamp(player.x, playLeft, wallX - player.w - 10);
+      }
+    }
+
+    function markInvalid(reason) {
+      if (!shot.invalid) {
+        shot.invalid = true;
+        shot.invalidReason = reason;
+        shot.pendingPoints = 0;
+      }
+    }
+
+    function updateBall(dt) {
+      if (!ball.active) return;
+
+      ball.vy += arena.gravity * dt;
+      ball.x += ball.vx * dt;
+      ball.y += ball.vy * dt;
+
+      ball.vx *= arena.airDrag;
+      ball.vy *= arena.airDrag;
+
+      if (arena.roofType !== "none") {
+        const ry = roofAtX(ball.x);
+
+        if (ball.y - ball.r <= ry && ball.vy < 0) {
+          let nx = 0, ny = 1;
+
+          if (arena.roofType === "angled") {
+            const y0 = roofAtX(playLeft);
+            const y1 = roofAtX(wallX);
+
+            const dx = (wallX - playLeft);
+            const dy = (y1 - y0);
+
+            let n1x = -dy, n1y = dx;
+            let n2x = dy,  n2y = -dx;
+
+            const len1 = Math.hypot(n1x, n1y) || 1;
+            n1x /= len1; n1y /= len1;
+
+            const len2 = Math.hypot(n2x, n2y) || 1;
+            n2x /= len2; n2y /= len2;
+
+            if (n1y > 0) { nx = n1x; ny = n1y; }
+            else         { nx = n2x; ny = n2y; }
+          }
+
+          const EPS = 0.6;
+          ball.y = ry + ball.r + EPS * ny;
+          ball.x = ball.x + EPS * nx;
+
+          const e = arena.restitutionRoof;
+          const vDotN = ball.vx * nx + ball.vy * ny;
+
+          if (vDotN < 0) {
+            ball.vx = ball.vx - (1 + e) * vDotN * nx;
+            ball.vy = ball.vy - (1 + e) * vDotN * ny;
+          }
+
+          if (!shot.hitWall) {
+            shot.hitRoofBeforeWall = true;
+            markInvalid("Roof hit before wall");
+
+            if (!shot.popupCeilingShown) {
+              shot.popupCeilingShown = true;
+              showPopup("Ceiling Fault", { size: 64, color: "#ffffff" });
+            }
+          }
+        }
+      }
+
+      if (ball.y + ball.r >= floorY) {
+        ball.y = floorY - ball.r;
+        ball.vy = -ball.vy * arena.restitutionFloor;
+        ball.vx *= arena.floorFriction;
+
+        if (!shot.hitWall) shot.bouncedBeforeWall = true;
+      }
+
+      if (ball.x + ball.r >= wallX) {
+        const withinWallFace = (ball.y + ball.r >= arena.wallTopY) && (ball.y - ball.r <= floorY);
+
+        if (!withinWallFace) {
+          if (!shot.hitWall) {
+            markInvalid("Missed wall face");
+            state = State.RETURNING;
+            updateStatus("Missed wall face — still catch to finish.");
+          }
+          ball.x = wallX - ball.r;
+          ball.vx = -Math.abs(ball.vx) * arena.restitutionWall;
+        } else {
+          ball.x = wallX - ball.r;
+
+          if (!shot.hitWall) {
+            shot.hitWall = true;
+            shot.wallHitY = ball.y;
+            lastWallHitY = ball.y;
+
+            if (!shot.bouncedBeforeWall) markInvalid("No bounce before wall");
+            if (!shot.invalid) shot.pendingPoints = scoreFromWallHit(ball.y);
+
+            state = State.RETURNING;
+            updateStatus("Wall hit — catch it!");
+          }
+
+          ball.vx = -Math.abs(ball.vx) * arena.restitutionWall;
+        }
+      }
+
+      if (ball.x - ball.r < playLeft) {
+        ball.x = playLeft + ball.r;
+        ball.vx = Math.abs(ball.vx) * 0.6;
+      }
+    }
+
+    // -----------------------------
+    // Multiplayer turn/round resolution
+    // -----------------------------
+    function endTurnWithPoints(pts) {
+      const ai = match.activeIndex;
+      const oi = 1 - ai;
+
+      const p = match.players[ai];
+      p.lastThrow = pts;
+
+      p.throws++;
+      p.sum += pts;
+      p.best = (p.best == null) ? pts : Math.max(p.best, pts);
+      if (pts === 100) p.walmart100s++;
+
+      match.roundShots[ai] = pts;
+
+      if (ai === match.roundStarter && pts === 0 && match.roundShots[oi] == null) {
+        match.firstPlayerScoredZeroThisRound = true;
+        showPopup("Layup Chance", { size: 64, color: "#ffffff" });
+      }
+
+      if (match.roundShots[oi] == null) {
+        match.activeIndex = oi;
+        setCurrentCharacterForTurn();
+        startNewShot();
+        updateStatus(`P${match.activeIndex + 1} turn`);
+        return;
+      }
+
+      const p1 = match.roundShots[0];
+      const p2 = match.roundShots[1];
+
+      const first = match.roundStarter;
+      const second = 1 - first;
+      const firstPts = match.roundShots[first];
+      const secondPts = match.roundShots[second];
+
+      if (match.firstPlayerScoredZeroThisRound && firstPts === 0 && secondPts > firstPts) {
+        match.players[second].layups++;
+        showPopup("Layup", { size: 74, color: "#ffffff" });
+      }
+
+      if (p1 > p2) match.players[0].roundsWon++;
+      else if (p2 > p1) match.players[1].roundsWon++;
+
+      if (match.players[0].roundsWon >= match.roundsToWin) {
+        match.winnerIndex = 0;
+        state = State.MATCH_OVER;
+        updateStatus("Match over!");
+        return;
+      }
+      if (match.players[1].roundsWon >= match.roundsToWin) {
+        match.winnerIndex = 1;
+        state = State.MATCH_OVER;
+        updateStatus("Match over!");
+        return;
+      }
+
+      match.roundNum++;
+      match.roundShots = [null, null];
+      match.roundStarter = 1 - match.roundStarter;
+      match.activeIndex = match.roundStarter;
+      match.firstPlayerScoredZeroThisRound = false;
+
+      setCurrentCharacterForTurn();
+      startNewShot();
+      updateStatus(`Round ${match.roundNum} — P${match.activeIndex + 1} starts`);
+    }
+
+    // -----------------------------
+    // Failsafe timeout
+    // -----------------------------
+    function forceSingleTimeout() {
+      if (match.enabled) return;
+      if (!ball.active) return;
+      if (state !== State.FLIGHT && state !== State.RETURNING) return;
+      if (state === State.SINGLE_OVER) return;
+
+      showPopup("Timeout", { size: 64, color: "#ffffff" });
+
+      ball.active = false;
+      singleShotTimer = 0;
+
+      const pts = 0;
+      singleStats.throws++;
+      singleStats.sum += pts;
+      singleStats.best = (singleStats.best == null) ? pts : Math.max(singleStats.best, pts);
+      lastThrowPoints = 0;
+
+      if (singleRunIsOver()) endSingleRun();
+      else {
+        startNewShot();
+        updateStatus("Timeout. Lock POWER.");
+      }
+    }
+
+    function resolveCatchOrMiss() {
+      const hands = getHandsRect();
+      const ballRect = { x: ball.x - ball.r, y: ball.y - ball.r, w: ball.r * 2, h: ball.r * 2 };
+
+      if (ball.vy > 0 && rectsOverlap(hands, ballRect)) {
+        const pts = shot.pendingPoints;
+        ball.active = false;
+
+        if (match.enabled) match.players[match.activeIndex].catches++;
+        else singleStats.catches++;
+
+        if (pts === 100) showPopup("Walmart 100!", { size: 84, color: "#3b82f6" });
+
+        if (match.enabled) {
+          endTurnWithPoints(pts);
+        } else {
+          singleStats.throws++;
+          singleStats.sum += pts;
+          singleStats.best = (singleStats.best == null) ? pts : Math.max(singleStats.best, pts);
+          if (pts === 100) singleStats.walmart100s++;
+
+          lastThrowPoints = pts;
+          singleShotTimer = 0;
+
+          if (singleRunIsOver()) endSingleRun();
+          else {
+            startNewShot();
+            updateStatus("Caught! Lock POWER.");
+          }
+        }
+        return;
+      }
+
+      if (ball.y + ball.r >= floorY) {
+        showPopup("Missed Catch", { size: 64, color: "#ffffff" });
+
+        ball.active = false;
+
+        if (match.enabled) {
+          endTurnWithPoints(0);
+        } else {
+          const pts = 0;
+          singleStats.throws++;
+          singleStats.sum += pts;
+          singleStats.best = (singleStats.best == null) ? pts : Math.max(singleStats.best, pts);
+
+          lastThrowPoints = 0;
+          singleShotTimer = 0;
+
+          if (singleRunIsOver()) endSingleRun();
+          else {
+            startNewShot();
+            updateStatus("Missed catch. Lock POWER.");
+          }
+        }
+        return;
+      }
+    }
+
+    function update(dt) {
+      if (state === State.TITLE) { updatePopup(dt); return; }
+
+      updatePopup(dt);
+
+      const canPlay = !match.enabled || match.started;
+
+      if (arena.level && state !== State.MATCH_OVER && state !== State.SINGLE_OVER && canPlay) updatePlayer(dt);
+
+      if (state === State.POWER_METER) {
+        resetBallToHand();
+        meterStep(dt, effectivePowerSpeed());
+      } else if (state === State.ANGLE_METER) {
+        resetBallToHand();
+        meterStep(dt, effectiveAngleSpeed());
+      } else if (state === State.FLIGHT) {
+        updateBall(dt);
+
+        if (!match.enabled && ball.active) {
+          singleShotTimer -= dt;
+          if (singleShotTimer <= 0) forceSingleTimeout();
+        }
+      } else if (state === State.RETURNING) {
+        updateBall(dt);
+        resolveCatchOrMiss();
+
+        if (!match.enabled && ball.active) {
+          singleShotTimer -= dt;
+          if (singleShotTimer <= 0) forceSingleTimeout();
+        }
+      }
+    }
+
+    // -----------------------------
+    // Drawing
+    // -----------------------------
+    function drawPowerMeter() {
+      const pad = 16;
+      const barW = 560;
+      const barH = 18;
+      const x = (W - barW) / 2;
+      const y = 18;
+
+      ctx.fillStyle = "rgba(15, 23, 42, 0.08)";
+      ctx.fillRect(x - pad, y - pad, barW + pad * 2, 92);
+
+      ctx.fillStyle = arena.theme.ui;
+      ctx.font = "18px system-ui";
+      ctx.textAlign = "center";
+      ctx.fillText("POWER METER", W / 2, y + 8);
+
+      const barY = y + 28;
+      ctx.fillStyle = "rgba(255,255,255,0.75)";
+      ctx.fillRect(x, barY, barW, barH);
+
+      const mx = x + meter.value * barW;
+      ctx.strokeStyle = "#ef4444";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(mx, barY - 8);
+      ctx.lineTo(mx, barY + barH + 8);
+      ctx.stroke();
+
+      ctx.fillStyle = arena.theme.ui;
+      ctx.font = "13px system-ui";
+      ctx.textAlign = "left";
+      ctx.fillText("Low", x, barY + barH + 24);
+      ctx.textAlign = "right";
+      ctx.fillText("High", x + barW, barY + barH + 24);
+
+      ctx.textAlign = "center";
+      ctx.font = "14px system-ui";
+      ctx.fillText("Press SPACE or Click to lock", W / 2, barY + barH + 46);
+    }
+
+    function drawAngleMeterVertical() {
+      const pad = 16;
+      const barH = 300;
+      const barW = 18;
+
+      const x = wallX - 70;
+      const y = (H - barH) / 2;
+
+      ctx.fillStyle = "rgba(15, 23, 42, 0.08)";
+      ctx.fillRect(x - pad, y - pad, barW + pad * 2, barH + 90);
+
+      ctx.fillStyle = arena.theme.ui;
+      ctx.font = "18px system-ui";
+      ctx.textAlign = "center";
+      ctx.fillText("ANGLE METER", x + barW / 2, y - 6);
+
+      ctx.fillStyle = "rgba(255,255,255,0.75)";
+      ctx.fillRect(x, y, barW, barH);
+
+      const my = y + (1 - meter.value) * barH;
+
+      ctx.strokeStyle = "#ef4444";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(x - 8, my);
+      ctx.lineTo(x + barW + 8, my);
+      ctx.stroke();
+
+      ctx.fillStyle = arena.theme.ui;
+      ctx.font = "13px system-ui";
+      ctx.textAlign = "left";
+      ctx.fillText("-60°", x - 18, y - 14);
+      ctx.fillText("-90°", x - 18, y + barH + 16);
+
+      ctx.textAlign = "center";
+      ctx.font = "14px system-ui";
+      ctx.fillText("Press SPACE or Click", x + barW / 2, y + barH + 42);
+    }
+
+    function drawRoof() {
+      if (arena.roofType === "none") return;
+
+      ctx.strokeStyle = arena.theme.roof;
+      ctx.lineWidth = 12;
+
+      ctx.beginPath();
+      const y0 = roofAtX(playLeft);
+      const y1 = roofAtX(wallX);
+      ctx.moveTo(playLeft, y0);
+      ctx.lineTo(wallX, y1);
+      ctx.stroke();
+
+      if (arena.level?.id === 0) {
+        ctx.strokeStyle = "rgba(0,0,0,0.25)";
+        ctx.lineWidth = 16;
+
+        ctx.beginPath();
+        ctx.moveTo(playLeft, y0 + 6);
+        ctx.lineTo(wallX, y1 + 6);
+        ctx.stroke();
+      }
+    }
+
+    // NEW: layered character renderer
+    function drawCharacter(x, y, w, h, outfit) {
+      const hairH  = h * 0.10;
+      const faceH  = h * 0.25;
+      const shirtH = h * 0.30;
+      const pantsH = h * 0.35;
+
+      // Hair
+      ctx.fillStyle = outfit.hair;
+      ctx.fillRect(x, y, w, hairH);
+
+      // Face
+      ctx.fillStyle = outfit.face;
+      ctx.fillRect(x, y + hairH, w, faceH);
+
+      // Shirt
+      ctx.fillStyle = outfit.shirt;
+      ctx.fillRect(x, y + hairH + faceH, w, shirtH);
+
+      // Pants
+      ctx.fillStyle = outfit.pants;
+      ctx.fillRect(x, y + hairH + faceH + shirtH, w, pantsH);
+
+      // Outline
+      ctx.strokeStyle = outfit.outline ?? "#111827";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x, y, w, h);
+
+      // Tiny eyes (optional but helps the face read)
+      const eyeY = y + hairH + faceH * 0.48;
+      const eyeDX = w * 0.18;
+      const eyeR = Math.max(1.8, Math.min(3.2, w * 0.03));
+
+      ctx.fillStyle = "rgba(0,0,0,0.55)";
+      ctx.beginPath();
+      ctx.arc(x + w * 0.5 - eyeDX, eyeY, eyeR, 0, Math.PI * 2);
+      ctx.arc(x + w * 0.5 + eyeDX, eyeY, eyeR, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Panel click-to-select P1/P2 during setup
+    function panelHitTestPlayerBlocks(mx, my) {
+      if (!match.enabled || match.started) return null;
+      if (mx > PANEL_W) return null;
+
+      const blockY = 130;
+      const blockH = 270;
+      const gap = 300;
+
+      const p1Top = blockY - 30;
+      const p1Bot = p1Top + blockH;
+      const p2Top = blockY + gap - 30;
+      const p2Bot = p2Top + blockH;
+
+      if (my >= p1Top && my <= p1Bot) return 0;
+      if (my >= p2Top && my <= p2Bot) return 1;
+      return null;
+    }
+
+    canvas.addEventListener("mousedown", (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const mx = (e.clientX - rect.left) * (canvas.width / rect.width);
+      const my = (e.clientY - rect.top) * (canvas.height / rect.height);
+
+      const hit = panelHitTestPlayerBlocks(mx, my);
+      if (hit != null) {
+        match.setupPickIndex = hit;
+        const cid = match.players[hit].characterId ?? 0;
+        currentCharacter = CHARACTERS[cid] ?? CHARACTERS[0];
+        updateCharacterButtons();
+        updateStatus(`Assigning for P${hit + 1} (click character buttons)`);
+        refreshBeginButton();
+      }
+    });
+
+    function drawSidePanel() {
+      ctx.fillStyle = "#0b1220";
+      ctx.fillRect(0, 0, PANEL_W, H);
+
+      ctx.fillStyle = "rgba(255,255,255,0.08)";
+      ctx.fillRect(PANEL_W - 2, 0, 2, H);
+
+      ctx.fillStyle = "#e5e7eb";
+      ctx.textAlign = "left";
+
+      ctx.font = "18px system-ui";
+      ctx.fillText(match.enabled ? "2P HOTSEAT" : "SINGLE", 14, 28);
+
+      ctx.font = "14px system-ui";
+      if (match.enabled) {
+        ctx.fillText(`Round: ${match.roundNum}`, 14, 52);
+        ctx.fillText(`First to: ${match.roundsToWin}`, 14, 72);
+        ctx.fillText(match.started ? `Turn: P${match.activeIndex + 1}` : `Setup: click P1/P2`, 14, 92);
+      } else {
+        const avg = avgScore(singleStats);
+        const best = singleStats.best ?? "-";
+        const pct = Math.round(catchPct(singleStats) * 100);
+
+        ctx.fillText(`Avg: ${avg.toFixed(1)}`, 14, 52);
+        ctx.fillText(`Best: ${best}`, 14, 72);
+        ctx.fillText(`Catch%: ${pct}%`, 14, 92);
+        ctx.fillText(`Walmart100s: ${singleStats.walmart100s}`, 14, 112);
+        ctx.fillText(currentCharacter ? `Char: ${currentCharacter.name}` : "", 14, 132);
+      }
+
+      const blockY = 130;
+      const blockH = 270;
+
+      function drawPlayerBlock(i, y) {
+        const p = match.players[i];
+        const ch = (p.characterId != null) ? CHARACTERS[p.characterId] : null;
+
+        const isActive = match.enabled && match.started && match.activeIndex === i && state !== State.MATCH_OVER;
+        const isSetupSel = match.enabled && !match.started && match.setupPickIndex === i;
+
+        if (isActive) {
+          ctx.fillStyle = "rgba(34, 197, 94, 0.16)";
+          ctx.fillRect(10, y - 22, PANEL_W - 20, blockH);
+        } else if (isSetupSel) {
+          ctx.fillStyle = "rgba(250, 204, 21, 0.14)";
+          ctx.fillRect(10, y - 22, PANEL_W - 20, blockH);
+        }
+
+        ctx.fillStyle = "#e5e7eb";
+        ctx.font = "16px system-ui";
+        ctx.fillText(`${p.name}`, 14, y);
+
+        ctx.font = "13px system-ui";
+        if (ch) ctx.fillText(`Char: ${ch.name} (${tiersTextFor(ch)})`, 14, y + 22);
+        else ctx.fillText(`Char: (pick one)`, 14, y + 22);
+
+        ctx.font = "54px system-ui";
+        ctx.fillText(`${p.roundsWon}`, 14, y + 82);
+        ctx.font = "13px system-ui";
+        ctx.fillText("ROUNDS", 14, y + 102);
+
+        const avg = p.throws > 0 ? (p.sum / p.throws) : 0;
+        const pct = p.attempts > 0 ? Math.round((p.catches / p.attempts) * 100) : 0;
+        const best = (p.best == null) ? "-" : p.best;
+
+        ctx.font = "14px system-ui";
+        ctx.fillText(`Avg: ${avg.toFixed(1)}`, 14, y + 132);
+        ctx.fillText(`Catch%: ${pct}%`, 14, y + 154);
+        ctx.fillText(`Best: ${best}`, 14, y + 176);
+        ctx.fillText(`Walmart100s: ${p.walmart100s}`, 14, y + 198);
+        ctx.fillText(`Layups: ${p.layups}`, 14, y + 220);
+
+        const s = match.roundShots[i];
+        ctx.fillText(`This round: ${s == null ? "…" : s}`, 14, y + 242);
+        ctx.fillText(`Last: ${p.lastThrow ?? "-"}`, 14, y + 264);
+      }
+
+      if (match.enabled) {
+        drawPlayerBlock(0, blockY);
+        drawPlayerBlock(1, blockY + 300);
+      }
+
+      if (match.enabled && state === State.MATCH_OVER && match.winnerIndex != null) {
+        ctx.fillStyle = "rgba(15,23,42,0.85)";
+        ctx.fillRect(8, H - 150, PANEL_W - 16, 130);
+
+        ctx.fillStyle = "#ffffff";
+        ctx.textAlign = "center";
+        ctx.font = "18px system-ui";
+        ctx.fillText(`WINNER: ${match.players[match.winnerIndex].name}`, PANEL_W / 2, H - 112);
+
+        ctx.font = "14px system-ui";
+        ctx.fillText(`Final: ${match.players[0].roundsWon}–${match.players[1].roundsWon}`, PANEL_W / 2, H - 86);
+        ctx.fillText("Press R to reset", PANEL_W / 2, H - 56);
+      }
+
+      ctx.textAlign = "left";
+    }
+
+    function drawTitleScreen() {
+      ctx.fillStyle = "rgba(0,0,0,0.35)";
+      ctx.fillRect(0, 0, W, H);
+
+      ctx.fillStyle = "rgba(15, 23, 42, 0.75)";
+      ctx.fillRect(W/2 - 360, H/2 - 170, 720, 340);
+
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#ffffff";
+
+      ctx.font = "bold 86px Trebuchet MS, system-ui";
+      ctx.fillText("BIG BOUNCE", W/2, H/2 - 40);
+
+      ctx.font = "bold 22px Trebuchet MS, system-ui";
+      ctx.fillText("Press SPACE or Click to Start", W/2, H/2 + 20);
+
+      ctx.font = "16px Trebuchet MS, system-ui";
+      ctx.fillStyle = "rgba(255,255,255,0.9)";
+      ctx.fillText("Hotseat: pick level + characters (P1/P2), then Begin Game.", W/2, H/2 + 64);
+
+      ctx.textAlign = "left";
+    }
+
+    function drawSingleOverOverlay() {
+      ctx.fillStyle = "rgba(0,0,0,0.35)";
+      ctx.fillRect(playLeft, 0, W - playLeft, H);
+
+      const cardW = 740;
+      const cardH = 360;
+      const cx = playLeft + (W - playLeft) / 2;
+      const cy = H / 2;
+
+      ctx.fillStyle = "rgba(15, 23, 42, 0.78)";
+      ctx.fillRect(cx - cardW/2, cy - cardH/2, cardW, cardH);
+
+      const total = singleStats.sum;
+      const avg = avgScore(singleStats);
+      const best = singleStats.best ?? "-";
+      const pct = Math.round(catchPct(singleStats) * 100);
+      const w100 = singleStats.walmart100s;
+
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#ffffff";
+
+      ctx.font = "900 64px Trebuchet MS, system-ui";
+      ctx.fillText("RUN OVER", cx, cy - 110);
+
+      ctx.font = "700 24px Trebuchet MS, system-ui";
+      ctx.fillText(`Turns: ${Math.min(singleStats.attempts, SINGLE_TURNS)}/${SINGLE_TURNS}`, cx, cy - 68);
+
+      ctx.font = "22px Trebuchet MS, system-ui";
+      ctx.fillText(`Total Points: ${total}`, cx, cy - 18);
+      ctx.fillText(`Avg: ${avg.toFixed(1)}   |   Best: ${best}`, cx, cy + 20);
+      ctx.fillText(`Catch%: ${pct}%   |   Walmart100s: ${w100}`, cx, cy + 58);
+
+      ctx.font = "18px Trebuchet MS, system-ui";
+      ctx.fillStyle = "rgba(255,255,255,0.9)";
+      ctx.fillText("Press R to restart run", cx, cy + 120);
+
+      ctx.textAlign = "left";
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, W, H);
+
+      drawSidePanel();
+
+      ctx.fillStyle = arena.theme?.bg ?? "#f8fafc";
+      ctx.fillRect(playLeft, 0, W - playLeft, H);
+
+      drawRoof();
+
+      ctx.fillStyle = arena.theme?.floor;
+      ctx.fillRect(playLeft, floorY, W - playLeft, H - floorY);
+
+      if (arena.level?.id === 1) {
+        drawCraters("rgba(255,255,255,0.25)", 22, "floor");
+        drawCraters("rgba(255,255,255,0.25)", 14, "wall");
+      }
+
+      ctx.fillStyle = arena.theme?.wall;
+      ctx.fillRect(wallX, arena.wallTopY, W - wallX, floorY - arena.wallTopY);
+
+      if (arena.level?.id === 2) {
+        drawConcreteTexture(playLeft, floorY, W - playLeft, H - floorY);
+        drawConcreteTexture(wallX, arena.wallTopY, W - wallX, floorY - arena.wallTopY);
+      }
+
+      // NEW: draw layered character
+      const outfit = currentCharacter?.outfit ?? DEFAULT_OUTFIT;
+      drawCharacter(player.x, player.y, player.w, player.h, outfit);
+
+      const hands = getHandsRect();
+      ctx.fillStyle = "rgba(34, 197, 94, 0.35)";
+      ctx.fillRect(hands.x, hands.y, hands.w, hands.h);
+      ctx.strokeStyle = "rgba(15, 23, 42, 0.75)";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(hands.x, hands.y, hands.w, hands.h);
+
+      ctx.beginPath();
+      ctx.fillStyle = "#ef4444";
+      ctx.strokeStyle = "#111827";
+      ctx.lineWidth = 2;
+      ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      if (lastWallHitY != null) {
+        ctx.strokeStyle = "#ef4444";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(wallX, lastWallHitY);
+        ctx.lineTo(wallX + 30, lastWallHitY);
+        ctx.stroke();
+      }
+
+      if (state === State.SELECT_LEVEL) {
+        ctx.fillStyle = "rgba(15, 23, 42, 0.10)";
+        ctx.fillRect(W/2 - 320, H/2 - 70, 640, 140);
+        ctx.fillStyle = arena.theme.ui;
+        ctx.textAlign = "center";
+        ctx.font = "22px system-ui";
+        ctx.fillText(match.enabled ? "Pick a Level, Assign P1/P2, then Begin Game" : "Select a Level Above to Start", W/2, H/2 - 10);
+        ctx.font = "14px system-ui";
+        ctx.fillText("Townhouse = angled roof | Moon = low gravity | Berlin Wall = no roof + tall wall", W/2, H/2 + 20);
+        ctx.textAlign = "left";
+      }
+
+      if (state === State.POWER_METER) drawPowerMeter();
+      else if (state === State.ANGLE_METER) drawAngleMeterVertical();
+      else if (state === State.FLIGHT || state === State.RETURNING) {
+        ctx.fillStyle = "rgba(15,23,42,0.08)";
+        ctx.fillRect(W/2 - 280, 18, 560, 42);
+        ctx.fillStyle = arena.theme.ui;
+        ctx.textAlign = "center";
+        ctx.font = "16px system-ui";
+        ctx.fillText("Move with ← → and jump with ↑ to catch the ball", W/2, 46);
+        ctx.textAlign = "left";
+      }
+
+      if (match.enabled && match.started && state !== State.MATCH_OVER) {
+        ctx.fillStyle = "rgba(15,23,42,0.10)";
+        ctx.fillRect(playLeft + 10, 10, 320, 44);
+        ctx.fillStyle = arena.theme.ui;
+        ctx.textAlign = "left";
+        ctx.font = "18px system-ui";
+        ctx.fillText(`TURN: P${match.activeIndex + 1}`, playLeft + 22, 38);
+      }
+
+      drawPopup();
+
+      if (state === State.SINGLE_OVER) drawSingleOverOverlay();
+      if (state === State.TITLE) drawTitleScreen();
+    }
+
+    // -----------------------------
+    // Loop
+    // -----------------------------
+    let last = performance.now();
+    function loop(t) {
+      const dt = Math.min(0.033, (t - last) / 1000);
+      last = t;
+      update(dt);
+      draw();
+      requestAnimationFrame(loop);
+    }
+
+    // -----------------------------
+    // Init
+    // -----------------------------
+    function initButtons() {
+      document.getElementById("modeSingle").classList.toggle("active", true);
+      document.getElementById("modeMulti").classList.toggle("active", false);
+    }
+
+    initButtons();
+    setMode(false);
+    updateCharacterButtons();
+    resetGame();
+    state = State.TITLE;
+    updateStatus("Press SPACE or Click to start.");
+    refreshBeginButton();
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
